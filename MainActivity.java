@@ -6,6 +6,9 @@ import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.graphics.drawable.BitmapDrawable;
 import android.location.Address;
 import android.location.Geocoder;
 import android.location.Location;
@@ -13,6 +16,7 @@ import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.RemoteException;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.WindowManager;
@@ -29,11 +33,23 @@ import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.OnMapReadyCallback;
 import com.google.android.gms.maps.SupportMapFragment;
 import com.google.android.gms.maps.model.BitmapDescriptorFactory;
+import com.google.android.gms.maps.model.CircleOptions;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
 
+import org.altbeacon.beacon.Beacon;
+import org.altbeacon.beacon.BeaconConsumer;
+import org.altbeacon.beacon.BeaconManager;
+import org.altbeacon.beacon.BeaconParser;
+import org.altbeacon.beacon.RangeNotifier;
+import org.altbeacon.beacon.Region;
+
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 
@@ -42,13 +58,17 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-
 public class MainActivity extends AppCompatActivity
         implements OnMapReadyCallback,
         GoogleApiClient.ConnectionCallbacks,
         GoogleApiClient.OnConnectionFailedListener,
-        LocationListener {
-
+        LocationListener,
+        BeaconConsumer {
+    private Collection<Beacon> beacons;
+    private Region region;
+    private BeaconManager beaconManager;
+    private List<Beacon> beaconList = new ArrayList<>();
+    private boolean isMarkChecked = false;
     private GoogleApiClient mGoogleApiClient = null;
     private GoogleMap mGoogleMap = null;
     private Marker currentMarker = null;
@@ -56,8 +76,8 @@ public class MainActivity extends AppCompatActivity
     private static final String TAG = "googlemap_example";
     private static final int GPS_ENABLE_REQUEST_CODE = 2001;
     private static final int PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION = 2002;
-    private static final int UPDATE_INTERVAL_MS = 500;  // 0.5초
-    private static final int FASTEST_UPDATE_INTERVAL_MS = 250; // 0.25
+    private static final int UPDATE_INTERVAL_MS = 1000;  // 1초
+    private static final int FASTEST_UPDATE_INTERVAL_MS = 500; // 0.25
 
     private AppCompatActivity mActivity;
     boolean askPermissionOnceAgain = false;
@@ -66,8 +86,6 @@ public class MainActivity extends AppCompatActivity
     boolean mMoveMapByUser = true;
     boolean mMoveMapByAPI = true;
     LatLng currentPosition;
-
-    private boolean checkSignal=true;
     LocationRequest locationRequest = new LocationRequest()
             .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY)
             .setInterval(UPDATE_INTERVAL_MS)
@@ -77,6 +95,11 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        beaconManager = BeaconManager.getInstanceForApplication(this);
+        beaconManager.getBeaconParsers().add(new BeaconParser().setBeaconLayout("m:0-3=4c000215,i:4-19,i:20-21,i:22-23,p:24-24"));
+        beaconManager.bind(this);
+
 
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -99,6 +122,38 @@ public class MainActivity extends AppCompatActivity
         mapFragment.getMapAsync(this);
 
     }
+
+    @Override
+    protected void onDestroy(){
+        super.onDestroy();
+        beaconManager.unbind(this);
+    }
+
+    @Override
+    public void onBeaconServiceConnect() {
+        beaconManager.addRangeNotifier(new RangeNotifier() {
+            @Override
+            // 비콘이 감지되면 해당 함수가 호출된다. Collection<Beacon> beacons에는 감지된 비콘의 리스트가,
+            // region에는 비콘들에 대응하는 Region 객체가 들어온다.
+            public void didRangeBeaconsInRegion(Collection<Beacon> beacons, Region region) {
+                if (beacons.size() > 0) {
+                    beaconList.clear();
+                    for (Beacon beacon : beacons) {
+                        beaconList.add(beacon);
+                    }
+                }
+            }
+        });
+
+        try {
+            beaconManager.startRangingBeaconsInRegion(new Region("myRangingUniqueId", null, null, null));
+        } catch (RemoteException e)  {
+            beaconList.clear();
+        }
+    }
+
+    // 버튼이 클릭되면 textView 에 비콘들의 정보를 뿌린다.
+
 
 
     @Override
@@ -161,6 +216,12 @@ public class MainActivity extends AppCompatActivity
     public GoogleMap getGoogleMap(){
         return mGoogleMap;
     }
+
+    public static final double byteArrayToDouble(byte[] bytes, int i1, int i2) {
+        return ByteBuffer.wrap(Arrays.copyOfRange(bytes, i1, i2)).getDouble();
+    }
+
+
     @Override
     public void onMapReady(GoogleMap googleMap) {
 
@@ -214,31 +275,51 @@ public class MainActivity extends AppCompatActivity
             @Override
             public void onCameraMove() {
                 if(getGoogleMap() != null){//getSignal
-//                    if(getSignal()){
-//
-//                        if(true) {//add branch instruction to check beacon signal
-//                            LatLng destinationLatLng = new LatLng(37.452699, 126.655683);
-//
-//                            MarkerOptions markerOptions = new MarkerOptions();
-//                            markerOptions.position(destinationLatLng);
-//
-//                            CircleOptions circle5M = new CircleOptions().center(destinationLatLng)
-//                                    .radius(5)
-//                                    .strokeWidth(0f)
-//                                    .fillColor(Color.parseColor("#88E10101"));
-//                            BitmapDrawable bitmapdraw=(BitmapDrawable)getResources().getDrawable(R.drawable.pedestrian_marker_png);
-//                            Bitmap b=bitmapdraw.getBitmap();
-//                            Bitmap smallMarker = Bitmap.createScaledBitmap(b, 150, 150, false);
-//
-//                            markerOptions.icon(BitmapDescriptorFactory.fromBitmap(smallMarker));
-//
-//                            this.mGoogleMap.addMarker(markerOptions);
-//                            this.mGoogleMap.addCircle(circle5M);
-//                        }
-//                    }
-                    //else{
+                    LatLng destinationLatLng;
+                    MarkerOptions markerOptions;
+                    Marker m=null;
+                    if(beacons != null){
+                        beaconList.clear();
+                        for(Beacon beacon : beacons){
+                            beaconList.add(beacon);
+                        }
+                        for(Beacon beacon:beaconList){
+                            if(!isMarkChecked) {
+                                double latitude = byteArrayToDouble(beacon.getId1().toByteArray(), 0, 8);
+                                double longtitude = byteArrayToDouble(beacon.getId1().toByteArray(), 8, 16);
 
-                    //}
+                                destinationLatLng = new LatLng(latitude, longtitude);
+
+                                markerOptions = new MarkerOptions();
+                                markerOptions.position(destinationLatLng);
+
+                                CircleOptions circle5M = new CircleOptions().center(destinationLatLng)
+                                        .radius(5)
+                                        .strokeWidth(0f)
+                                        .fillColor(Color.parseColor("#88E10101"));
+                                BitmapDrawable bitmapdraw = (BitmapDrawable) getResources().getDrawable(R.drawable.pedestrian_marker_png);
+                                Bitmap b = bitmapdraw.getBitmap();
+                                Bitmap smallMarker = Bitmap.createScaledBitmap(b, 150, 150, false);
+
+                                markerOptions.icon(BitmapDescriptorFactory.fromBitmap(smallMarker));
+
+                                m = getGoogleMap().addMarker(markerOptions);
+                                getGoogleMap().addCircle(circle5M);
+                                isMarkChecked = true;
+                            }
+
+                        }
+
+
+                    }
+                    else{
+                        beaconList.clear();
+                        if(m != null) {
+                            m.remove();
+                        }
+                        isMarkChecked = false;
+                    }
+
                 }
 
             }
@@ -618,7 +699,6 @@ public class MainActivity extends AppCompatActivity
                 break;
         }
     }
-
     final long INTERVAL_TIME = 1000;
     long previousTime = 0;
 
@@ -632,5 +712,7 @@ public class MainActivity extends AppCompatActivity
             Toast.makeText(this, "한번 더 누르면 종료됩니다.",Toast.LENGTH_SHORT).show();
         }
     }
+
+
 
 }
